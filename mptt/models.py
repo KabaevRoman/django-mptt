@@ -3,6 +3,7 @@ import operator
 import sys
 import threading
 from functools import reduce, wraps
+from uuid import uuid4
 
 import django
 from django.conf import settings
@@ -69,6 +70,7 @@ class MPTTOptions:
                 parent_attr = 'myparent'
     """
 
+    root_node_ordering = True
     order_insertion_by = []
     left_attr = "lft"
     right_attr = "rght"
@@ -210,8 +212,13 @@ class MPTTOptions:
         nodes) so that ordering by the fields specified by the node's class'
         ``order_insertion_by`` option is maintained.
 
+        Returns ``None`` if ``node`` is a root node and ``root_node_ordering`` is ``False``.
         Returns ``None`` if no suitable sibling can be found.
         """
+        # Short circuit root node order calculations, if we have disabled root node ordering...
+        if parent is None and not self.root_node_ordering:
+            return None
+
         right_sibling = None
         # Optimisation - if the parent doesn't have descendants,
         # the node will always be its last child.
@@ -368,9 +375,10 @@ class MPTTModelBase(ModelBase):
 
                 for field_name in field_names:
                     if field_name not in existing_field_names:
-                        field = models.PositiveIntegerField(
-                            db_index=field_name in indexed_attrs, editable=False
-                        )
+                        if field_name == mptt_meta.tree_id_attr and not mptt_meta.root_node_ordering:
+                            field = models.UUIDField(blank=True, null=False, db_index=True, default=uuid4)
+                        else:
+                            field = models.PositiveIntegerField(db_index=True, editable=False)
                         field.contribute_to_class(cls, field_name)
 
                 if django.VERSION < (5,):
@@ -1011,8 +1019,9 @@ class MPTTModel(models.Model, metaclass=MPTTModelBase):
                             refresh_target=False,
                         )
                     else:
-                        # Default movement
-                        if parent_id is None:
+                        # Default movement (root node ordering is enabled)
+                        if parent_id is None and opts.root_node_ordering:
+                            # we are moving a node to the root
                             root_nodes = self._tree_manager.root_nodes()
                             try:
                                 rightmost_sibling = root_nodes.exclude(
